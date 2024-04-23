@@ -12,12 +12,13 @@ from bokeh.layouts import row, widgetbox, column
 from bokeh.models import ColumnDataSource, Range1d
 from bokeh.models.widgets import Slider, TextInput, Paragraph, Div
 from bokeh.plotting import figure
+from bokeh.models.widgets import Button
 
 
 import serial
 import serial.tools.list_ports
 
-useSerial = True
+useSerial = False
 # To debug away from the device. True connects for real, False uses fake data
 # If the counter is not connected, you can set this to False in order to try it
 # out, or edit the calculations etc.
@@ -84,17 +85,72 @@ statsA = Div(text="100", width=250, height=40, style={'font-size': '150%'})
 statsB = Div(text="100", width=250, height=40, style={'font-size': '150%'})
 statsAB = Div(text="100", width=250, height=40, style={'font-size': '150%'})
 statsABP = Div(text="100", width=250, height=40, style={'font-size': '150%'})
+statsABBP = Div(text="100", width=250, height=40, style={'font-size': '150%'})
 g2 = Paragraph(text="100", width=200, height=80, style={'font-size': '150%'})
 g2_2d = Paragraph(text="100", width=250, height=40, style={'font-size': '150%'})
 
+# Additional widgets for logging data
+filename_input = TextInput(title="Log Filename:", value="data_log.txt")
+logging_duration = Slider(title="Logging Duration (seconds):", value=5, start=1, end=30, step=1)
+start_logging_button = Button(label="Start Logging", button_type="success")
+stop_logging_button = Button(label="Stop Logging", button_type="danger")
+log_status = Div(text="Logging Status: Ready", width=200, height=30)
 
-# Set up callbacks
-def send_command(attrname, old, new):
-    # not implemented yet
-    # TODO turn into a raw command area for sending any device command
-    plot.title.text = command.value
+# Global variables for logging
+logging_active = False
+start_time = None
 
-command.on_change('value', send_command)
+def start_logging():
+    global logging_active, start_time
+    logging_active = True
+    start_time = time.time()
+    log_status.text = "Logging Status: Logging..."
+
+def stop_logging():
+    global logging_active
+    if logging_active:
+        logging_active = False
+        log_status.text = "Logging Status: Stopped"
+        update_data()  # Ensure one final data write if still within time limit
+
+def log_data(data):
+    if logging_active:
+        current_time = time.time()
+        elapsed_time = current_time - start_time
+        if elapsed_time < logging_duration.value:
+            with open(filename_input.value, 'a') as file:
+                file.write(f"{data}\n")
+        else:
+            stop_logging()
+
+def send_command(command:str):
+    """
+    Send a command to the device.
+
+    Args:
+        command (str): The command to be sent.
+
+    Returns:
+        None
+    """
+    if useSerial:
+        plot.title.text = command.value
+        s.write(bytes(command, 'utf-8'))
+        #response = read_response()
+
+def read_response(query_delay=0.3):
+    """
+    Reads the response from the device and returns it. 
+
+    Returns:
+        str: The response from the device.
+    
+    """
+    time.sleep(query_delay)
+    response = s.readline().decode('utf-8').strip('\n')
+    return response
+
+#command.on_change('value', send_command)
 
 last_time = time.time()
 
@@ -148,6 +204,7 @@ def update_data():
     statsB.text = "B: %d +/- %d" % (np.mean(b), np.std(b))
     statsAB.text = "AB: %d +/- %d" % (np.mean(ab), np.std(ab))
     statsABP.text = "AB': %d +/- %d" % (np.mean(abp), np.std(abp))
+    statsABBP.text = "ABB': %d +/- %d" % (np.mean(abbp), np.std(abbp))
     # calculate g(2):
     try:
         g2value = (np.sum(a)*np.sum(abbp)) / (np.sum(ab) * np.sum(abp))
@@ -179,6 +236,17 @@ def update_data():
     except ValueError:
         print("value error printing g2")
         g2.text = "g(2) = NaN"
+
+    # If logging is active, log the data
+    if logging_active:
+        data_to_log = [raw[0], raw[1], coinc[0], coinc[1], coinc[2], coinc[3], err]
+        if g2value and g2dev:
+            data_to_log.append(g2value)
+            data_to_log.append(g2dev)
+        if g2_2d_value and g2_2d_dev:
+            data_to_log.append(g2_2d_value)
+            data_to_log.append(g2_2d_dev)
+        log_data(data)  # Pass the raw or processed data for logging
 
     #print(raw)
 
@@ -217,9 +285,18 @@ countControls = column(command, scalemin, scalemax, width=150)
 coincControls = column(scalemin2,scalemax2, width=150)
 
 # build the app document, this is just layout control and arranging the interface
-curdoc().add_root(row(countControls, plot, column(statsA, statsB, statsAB, statsABP, g2, points), width=1200))
+curdoc().add_root(row(countControls, plot, column(statsA, statsB, statsAB, statsABP, statsABBP, g2, points), width=1200))
 curdoc().add_root(row(coincControls, plot2, width=1200))
 curdoc().title = "Coincidence"
+
+start_logging_button.on_click(start_logging)
+stop_logging_button.on_click(stop_logging)
+
+# Adjust layout to include logging controls
+logging_controls = column(filename_input, logging_duration, start_logging_button, stop_logging_button, log_status)
+
+curdoc().add_root(row(logging_controls, width=400))
+# Add this row wherever you want the logging controls to appear in your layout
 
 # set the callback to pull the data every 100 ms:
 curdoc().add_periodic_callback(update_data, 100)
